@@ -66,10 +66,88 @@ class Simple_Bluesky_Poster {
         }
     }
 
-    public function post_to_bluesky($post_ID, $post) {
-        // Keep the existing BlueSky posting logic unchanged
-        // No edits needed here since this logic already works.
+public function post_to_bluesky($post_ID, $post) {
+    $this->identifier = get_option('bluesky_identifier');
+    $this->password = get_option('bluesky_password');
+
+    if (empty($this->identifier) || empty($this->password)) {
+        $this->log(__("Bluesky credentials not set", 'simple-auto-poster-for-bluesky'));
+        return;
     }
+
+    $auth_url = 'https://bsky.social/xrpc/com.atproto.server.createSession';
+    $post_url = 'https://bsky.social/xrpc/com.atproto.repo.createRecord';
+
+    $this->log(__("Authenticating with Bluesky", 'simple-auto-poster-for-bluesky'));
+    $auth_response = wp_remote_post($auth_url, [
+        'body' => wp_json_encode([
+            'identifier' => $this->identifier,
+            'password' => $this->password
+        ]),
+        'headers' => ['Content-Type' => 'application/json']
+    ]);
+
+    if (is_wp_error($auth_response)) {
+        $this->log(sprintf(
+            __("Bluesky authentication failed: %s", 'simple-auto-poster-for-bluesky'),
+            $auth_response->get_error_message()
+        ));
+        return;
+    }
+
+    if (wp_remote_retrieve_response_code($auth_response) != 200) {
+        $this->log(sprintf(
+            __("Bluesky authentication failed with status code: %d", 'simple-auto-poster-for-bluesky'),
+            wp_remote_retrieve_response_code($auth_response)
+        ));
+        return;
+    }
+
+    $session_data = json_decode(wp_remote_retrieve_body($auth_response), true);
+    $access_token = $session_data['accessJwt'];
+    $did = $session_data['did'];
+
+    $this->log(__("Authentication successful", 'simple-auto-poster-for-bluesky'));
+
+    $permalink = get_permalink($post_ID);
+    $post_data = [
+        'repo' => $did,
+        'collection' => 'app.bsky.feed.post',
+        'record' => [
+            'text' => wp_strip_all_tags($post->post_title) . "\n" . $permalink,
+            'createdAt' => gmdate('c')
+        ]
+    ];
+
+    $this->log(__("Posting to Bluesky", 'simple-auto-poster-for-bluesky'));
+    $post_response = wp_remote_post($post_url, [
+        'body' => wp_json_encode($post_data),
+        'headers' => [
+            'Content-Type' => 'application/json',
+            'Authorization' => "Bearer $access_token"
+        ]
+    ]);
+
+    if (is_wp_error($post_response)) {
+        $this->log(sprintf(
+            __("Failed to post to Bluesky: %s", 'simple-auto-poster-for-bluesky'),
+            $post_response->get_error_message()
+        ));
+        return;
+    }
+
+    if (wp_remote_retrieve_response_code($post_response) != 200) {
+        $this->log(sprintf(
+            __("Failed to post to Bluesky. Status code: %d", 'simple-auto-poster-for-bluesky'),
+            wp_remote_retrieve_response_code($post_response)
+        ));
+        return;
+    }
+
+    $this->log(__("Successfully posted to Bluesky", 'simple-auto-poster-for-bluesky'));
+    update_post_meta($post_ID, 'bluesky_shared', true);
+}
+
 
     public function add_menu_page() {
         add_menu_page(
